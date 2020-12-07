@@ -368,10 +368,11 @@ class DatasetManager(object):
         trans_texts, seq_lens, trans_items = [], [], None
         if items is not None:
             trans_items = [[] for _ in range(0, len(items))]
-
+        sorted_text = []
         for index in sorted_index:
             seq_lens.append(deepcopy(len_list[index]))
             trans_texts.append(deepcopy(texts[index]))
+            sorted_text.append(deepcopy(texts[index]))
             if digital:
                 trans_texts[-1].extend([0] * (max_len - len_list[index]))
             else:
@@ -388,9 +389,9 @@ class DatasetManager(object):
                             item[-1].extend(['<PAD>'] * (max_len - len_list[index]))
 
         if items is not None:
-            return trans_texts, trans_items, seq_lens
+            return trans_texts, trans_items, seq_lens, sorted_text
         else:
-            return trans_texts, seq_lens
+            return trans_texts, seq_lens, sorted_text
 
     @staticmethod
     def __collate_fn(batch):

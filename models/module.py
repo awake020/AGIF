@@ -9,7 +9,7 @@ from torch.nn.utils.rnn import pad_packed_sequence
 from torch.nn.parameter import Parameter
 import numpy as np
 from utils.process import normalize_adj
-
+import transformers
 
 class GraphAttentionLayer(nn.Module):
     """
@@ -123,6 +123,80 @@ class Encoder(nn.Module):
         c = self.__sentattention(hiddens, seq_lens)
         return hiddens, c
 
+class BertEncoder(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+
+        self.__args = args
+
+        # Initialize an bert Encoder object.
+        self.__encoder = transformers.RobertaModel.from_pretrained('roberta-base')
+        self.__tokenizer = transformers.RobertaTokenizer.from_pretrained('roberta-base')
+        self.pad = self.__tokenizer.convert_tokens_to_ids(["<pad>"])[0]
+        self.sep = self.__tokenizer.convert_tokens_to_ids(["</s>"])[0]
+        self.cls = self.__tokenizer.convert_tokens_to_ids(["<s>"])[0]
+
+    def get_info(self, x):
+        """
+
+        :param x: a batch of sentences which has been replaced in some positions.
+        :return: encoded elements token_loc, token_ids, type_ids, mask_ids
+        """
+        token_ids = []
+        token_loc = []
+        for xx in x:
+            per_token_ids = [self.cls]
+            per_token_loc = []
+            per_type_ids = []
+            per_mask_ids = []
+            cur_idx = 1
+            for token in xx:
+                a = self.__tokenizer.encode(token)
+                tmp_ids = self.__tokenizer.encode(token)[1:-1]
+                # print(token, tmp_ids)
+                per_token_ids += tmp_ids
+                per_token_loc.append(cur_idx)
+                cur_idx += len(tmp_ids)
+            per_token_ids += [self.sep]
+            # print(per_token_ids)
+            token_ids.append(per_token_ids)
+            token_loc.append(per_token_loc)
+        lens = [len(p) for p in token_ids]
+        max_len = max(lens)
+        mask_ids = []
+        type_ids = []
+        for per_token_ids in token_ids:
+            per_mask_ids = [1] * len(per_token_ids) + [0] * (max_len - len(per_token_ids))
+            per_token_ids += [self.pad] * (max_len - len(per_token_ids))
+            per_type_ids = [0] * max_len
+            mask_ids.append(per_mask_ids)
+            type_ids.append(per_type_ids)
+        token_ids = torch.Tensor(token_ids).long()
+        mask_ids = torch.Tensor(mask_ids).long()
+        type_ids = torch.Tensor(type_ids).long()
+        if torch.cuda.is_available():
+            token_ids = token_ids.cuda()
+            mask_ids = mask_ids.cuda()
+            type_ids = type_ids.cuda()
+        return token_loc, token_ids, type_ids, mask_ids
+
+    def forward(self, texts, lens):
+
+        token_loc, token_ids, type_ids, mask_ids = self.get_info(texts)
+        h, utt = self.__encoder(token_ids, token_type_ids=type_ids, attention_mask=mask_ids)
+        hiddens = []
+        for idx, locs in enumerate(token_loc):
+            hiddens.append(h[idx][locs])
+        # hiddens = torch.cat(hiddens, dim=0)
+        batch = len(texts)
+        max_len = lens[0]
+        out = torch.zeros((batch, max_len, 768))
+        if torch.cuda.is_available():
+            out = out.cuda()
+        for idx, x in enumerate(hiddens):
+            out[idx][:lens[idx]] = x
+        return out, utt
+
 
 class ModelManager(nn.Module):
 
@@ -140,13 +214,13 @@ class ModelManager(nn.Module):
             self.__args.word_embedding_dim
         )
 
-        self.G_encoder = Encoder(args)
+        self.G_encoder = BertEncoder(args)
         # Initialize an Decoder object for intent.
         self.__intent_decoder = nn.Sequential(
-            nn.Linear(self.__args.encoder_hidden_dim + self.__args.attention_output_dim,
-                      self.__args.encoder_hidden_dim + self.__args.attention_output_dim),
+            nn.Linear(768,
+                      768),
             nn.LeakyReLU(args.alpha),
-            nn.Linear(self.__args.encoder_hidden_dim + self.__args.attention_output_dim, self.__num_intent),
+            nn.Linear(768, self.__num_intent),
         )
 
         self.__intent_embedding = nn.Parameter(
@@ -156,7 +230,7 @@ class ModelManager(nn.Module):
         # Initialize an Decoder object for slot.
         self.__slot_decoder = LSTMDecoder(
             args,
-            self.__args.encoder_hidden_dim + self.__args.attention_output_dim,
+            768,
             self.__args.slot_decoder_hidden_dim,
             self.__num_slot, self.__args.dropout_rate,
             embedding_dim=self.__args.slot_embedding_dim)
@@ -197,8 +271,8 @@ class ModelManager(nn.Module):
         return adj
 
     def forward(self, text, seq_lens, n_predicts=None, forced_slot=None, forced_intent=None):
-        word_tensor = self.__embedding(text)
-        g_hiddens, g_c = self.G_encoder(word_tensor, seq_lens)
+        # word_tensor = self.__embedding(text)
+        g_hiddens, g_c = self.G_encoder(text, seq_lens)
         pred_intent = self.__intent_decoder(g_c)
         intent_index = (torch.sigmoid(pred_intent) > self.__args.threshold).nonzero()
         adj = self.generate_adj_gat(intent_index, len(pred_intent))

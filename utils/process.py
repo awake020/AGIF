@@ -13,7 +13,7 @@ import random
 import numpy as np
 from tqdm import tqdm
 from collections import Counter
-
+from transformers import AdamW
 # Utils functions copied from Slot-gated model, origin url:
 # 	https://github.com/MiuLab/SlotGated-SLU/blob/master/utils.py
 from utils import miulab
@@ -71,9 +71,12 @@ class Processor(object):
 
         self.__criterion = nn.NLLLoss()
         self.__criterion_intent = nn.BCEWithLogitsLoss()
-        self.__optimizer = optim.Adam(
-            self.__model.parameters(), lr=self.__dataset.learning_rate, weight_decay=self.__dataset.l2_penalty
-        )
+        bert_params = set(self.__model.G_encoder.parameters())
+        all_params = set(self.__model.parameters())
+        self.__optimizer = AdamW([
+            {"params": list(all_params - bert_params), "lr": self.args.learning_rate},
+            {"params": list(bert_params), "lr": 1e-5}
+        ])
 
         if self.__load_dir:
             if self.args.gpu:
@@ -95,20 +98,20 @@ class Processor(object):
             self.__model.train()
 
             for text_batch, slot_batch, intent_batch in tqdm(dataloader, ncols=50):
-                padded_text, [sorted_slot, sorted_intent], seq_lens = self.__dataset.add_padding(
+                padded_text, [sorted_slot, sorted_intent], seq_lens, sorted_text = self.__dataset.add_padding(
                     text_batch, [(slot_batch, True), (intent_batch, False)])
                 sorted_intent = [multilabel2one_hot(intents, len(self.__dataset.intent_alphabet)) for intents in
                                  sorted_intent]
-                text_var = torch.LongTensor(padded_text)
+                # text_var = torch.LongTensor(padded_text)
                 slot_var = torch.LongTensor(sorted_slot)
                 intent_var = torch.Tensor(sorted_intent)
                 max_len = np.max(seq_lens)
 
                 if self.args.gpu:
-                    text_var = text_var.cuda()
+                    # text_var = text_var.cuda()
                     slot_var = slot_var.cuda()
                     intent_var = intent_var.cuda()
-
+                text_var = self.__dataset.word_alphabet.get_instance(sorted_text)
                 random_slot, random_intent = random.random(), random.random()
                 if random_slot < self.__dataset.slot_forcing_rate:
                     slot_out, intent_out = self.__model(text_var, seq_lens, forced_slot=slot_var)
@@ -268,7 +271,7 @@ class Processor(object):
         pred_intent, real_intent = [], []
         all_token = []
         for text_batch, slot_batch, intent_batch in tqdm(dataloader, ncols=50):
-            padded_text, [sorted_slot, sorted_intent], seq_lens = dataset.add_padding(
+            padded_text, [sorted_slot, sorted_intent], seq_lens, sorted_text = dataset.add_padding(
                 text_batch, [(slot_batch, False), (intent_batch, False)],
                 digital=False
             )
@@ -280,15 +283,16 @@ class Processor(object):
                 else:
                     real_intent.append([intents])
 
-            digit_text = dataset.word_alphabet.get_index(padded_text)
-            var_text = torch.LongTensor(digit_text)
-            max_len = np.max(seq_lens)
-            if args.gpu:
-                var_text = var_text.cuda()
-            slot_idx, intent_idx = model(var_text, seq_lens, n_predicts=1)
+            # digit_text = dataset.word_alphabet.get_index(padded_text)
+            # var_text = torch.LongTensor(digit_text)
+            # max_len = np.max(seq_lens)
+            # if args.gpu:
+            #     var_text = var_text.cuda()
+
+            slot_idx, intent_idx = model(sorted_text, seq_lens, n_predicts=1)
             nested_slot = Evaluator.nested_list([list(Evaluator.expand_list(slot_idx))], seq_lens)[0]
             pred_slot.extend(dataset.slot_alphabet.get_instance(nested_slot))
-            intent_idx_ = [[] for i in range(len(digit_text))]
+            intent_idx_ = [[] for i in range(len(sorted_text))]
             for item in intent_idx:
                 intent_idx_[item[0]].append(item[1])
             intent_idx = intent_idx_
