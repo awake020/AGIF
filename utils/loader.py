@@ -294,8 +294,8 @@ class DatasetManager(object):
 
         if if_train_file:
             self.__word_alphabet.add_instance(text)
-            self.__slot_alphabet.add_instance(slot)
-            self.__intent_alphabet.add_instance(intent, multi_intent=True)
+        self.__slot_alphabet.add_instance(slot)
+        self.__intent_alphabet.add_instance(intent, multi_intent=True)
 
         # Record the raw text of dataset.
         self.__text_word_data[data_name] = text
